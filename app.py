@@ -680,7 +680,7 @@ elif step == 2:
                     m=s.m, rock_type=rock_type, k=s.k,
                     Q_w=s.Q_w, R_e=s.R_e, r_w=s.r_w, h=s.h,
                     P_e=s.P_e, P_w=s.P_w, t=s.t,
-                    n_points=300,
+                    n_points=150,
                 )
                 st.session_state.results = res
                 st.session_state.step = 3
@@ -797,48 +797,98 @@ elif step == 3:
                           title=L["chart_R"], **PLOTLY_LAYOUT)
         st.plotly_chart(fig, use_container_width=True)
 
-    # ── HEATMAP ───────────────────────────────────────────────────────────
+    # ── HEATMAP (lightweight: filled Scatterpolar rings) ──────────────────
     st.markdown(f'<div class="section-head">🗺️ {L["chart_heatmap"]}</div>', unsafe_allow_html=True)
     st.caption(L["heatmap_note"])
 
-    n_theta = 180
-    theta   = np.linspace(0, 2 * math.pi, n_theta)
-    # Build polar grid: r x theta
-    R_grid  = np.outer(R_arr, np.ones(n_theta))
-    X_grid  = np.outer(r_arr, np.cos(theta))
-    Y_grid  = np.outer(r_arr, np.sin(theta))
+    # Downsample to ≤60 radial rings — plenty for a visual, zero memory issues
+    MAX_RINGS = 60
+    step_r    = max(1, len(r_arr) // MAX_RINGS)
+    r_ds      = r_arr[::step_r]
+    R_ds      = R_arr[::step_r]
 
-    fig_hm = go.Figure(go.Heatmap(
-        x=X_grid.flatten(), y=Y_grid.flatten(), z=R_grid.flatten(),
-        colorscale=[
-            [0.0,  "#0d1017"],
-            [0.15, "#1e3a5f"],
-            [0.4,  "#1a6b4a"],
-            [0.65, "#b45309"],
-            [1.0,  "#ef4444"],
-        ],
-        colorbar=dict(
-            title=dict(text=L["R_axis"], font=dict(color="#9ca3af")),
-            tickfont=dict(color="#9ca3af", family="JetBrains Mono"),
-            bgcolor="rgba(0,0,0,0)",
-        ),
-        hovertemplate="x: %{x:.0f} m<br>y: %{y:.0f} m<br>R: %{z:.3e}<extra></extra>",
+    R_max_hm  = R_ds.max() if R_ds.max() > 0 else 1.0
+
+    # Colour ramp: dark-blue → green → orange → red
+    def _ring_color(val, vmax):
+        t = min(val / vmax, 1.0)
+        if t < 0.33:
+            r2, g2, b2 = int(30 + t/0.33*( 26-30)), int(58 + t/0.33*(107-58)), int(95 + t/0.33*(74-95))
+        elif t < 0.66:
+            tt = (t-0.33)/0.33
+            r2, g2, b2 = int(26 + tt*(180-26)), int(107 + tt*(83-107)), int(74 + tt*(9-74))
+        else:
+            tt = (t-0.66)/0.34
+            r2, g2, b2 = int(180 + tt*(239-180)), int(83 + tt*(68-83)), int(9 + tt*(68-9))
+        return f"rgba({r2},{g2},{b2},0.85)"
+
+    theta_ring = list(np.linspace(0, 360, 72, endpoint=False)) + [0]  # close the ring
+
+    fig_hm = go.Figure()
+
+    # Draw rings from outside in so inner rings paint over outer ones
+    for i in range(len(r_ds)-1, -1, -1):
+        color = _ring_color(R_ds[i], R_max_hm)
+        fig_hm.add_trace(go.Scatterpolar(
+            r=[r_ds[i]] * len(theta_ring),
+            theta=theta_ring,
+            mode="lines",
+            fill="toself" if i == 0 else "tonextr",
+            fillcolor=color,
+            line=dict(color=color, width=0),
+            hovertemplate=f"r = {r_ds[i]:.1f} m<br>R = {R_ds[i]:.3e}<extra></extra>",
+            showlegend=False,
+        ))
+
+    # Wellbore marker at centre
+    fig_hm.add_trace(go.Scatterpolar(
+        r=[0], theta=[0], mode="markers+text",
+        marker=dict(size=12, color="white", symbol="circle"),
+        text=["⛳"], textposition="middle center",
+        hoverinfo="skip", showlegend=False,
     ))
-    # Wellbore circle
-    theta_c = np.linspace(0, 2*math.pi, 200)
+
+    # Invisible colour axis for the colour bar using a tiny scatter
     fig_hm.add_trace(go.Scatter(
-        x=s.r_w * np.cos(theta_c), y=s.r_w * np.sin(theta_c),
-        mode="lines", line=dict(color="#ffffff", width=2),
-        name="Скважина" if st.session_state.lang == "ru" else "Wellbore",
+        x=[None], y=[None], mode="markers",
+        marker=dict(
+            colorscale=[
+                [0.0,  "#1e3a5f"],
+                [0.33, "#1a6b4a"],
+                [0.66, "#b45309"],
+                [1.0,  "#ef4444"],
+            ],
+            cmin=0, cmax=R_max_hm,
+            colorbar=dict(
+                title=dict(text=L["R_axis"], font=dict(color="#9ca3af", size=11)),
+                tickfont=dict(color="#9ca3af", family="JetBrains Mono", size=10),
+                bgcolor="rgba(0,0,0,0)",
+                thickness=14,
+                len=0.75,
+            ),
+            showscale=True,
+            color=[0],
+        ),
+        showlegend=False,
         hoverinfo="skip",
     ))
-    fig_hm.add_annotation(x=0, y=0, text="⛳", showarrow=False,
-                           font=dict(size=14, color="white"))
+
     fig_hm.update_layout(
-        xaxis=dict(scaleanchor="y", title="x (m)", gridcolor="#1e2230", zeroline=False),
-        yaxis=dict(title="y (m)", gridcolor="#1e2230", zeroline=False),
-        **{k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("xaxis", "yaxis")},
-        height=500,
+        polar=dict(
+            bgcolor="#0d1017",
+            radialaxis=dict(
+                visible=True, showgrid=True, gridcolor="#1e2230",
+                tickfont=dict(color="#6b7280", size=10, family="JetBrains Mono"),
+                ticksuffix=" m",
+            ),
+            angularaxis=dict(showgrid=False, showticklabels=False),
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="DM Sans, sans-serif", color="#9ca3af"),
+        height=480,
+        margin=dict(l=40, r=80, t=40, b=40),
+        hoverlabel=dict(bgcolor="#1e2230", bordercolor="#2d3748",
+                        font=dict(family="JetBrains Mono", color="#e8eaf0")),
     )
     st.plotly_chart(fig_hm, use_container_width=True)
 
@@ -940,6 +990,8 @@ elif step == 3:
             st.metric("R at r_w", f"{R_at_rw:.4e}")
         with col_d2:
             st.metric("R_max",  f"{R_max:.4e}")
+            st.metric("M(t)",   f"{M_t:.4e} т")
+            st.metric("n_r",    "300")
             st.metric("M(t)",   f"{M_t:.4e} т")
             st.metric("n_r",    "300")
 
