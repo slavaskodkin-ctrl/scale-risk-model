@@ -797,80 +797,64 @@ elif step == 3:
                           title=L["chart_R"], **PLOTLY_LAYOUT)
         st.plotly_chart(fig, use_container_width=True)
 
-    # ── HEATMAP (lightweight: filled Scatterpolar rings) ──────────────────
+    # ── HEATMAP (Barpolar — надёжный и лёгкий) ────────────────────────────
     st.markdown(f'<div class="section-head">🗺️ {L["chart_heatmap"]}</div>', unsafe_allow_html=True)
     st.caption(L["heatmap_note"])
 
-    # Downsample to ≤60 radial rings — plenty for a visual, zero memory issues
-    MAX_RINGS = 60
-    step_r    = max(1, len(r_arr) // MAX_RINGS)
-    r_ds      = r_arr[::step_r]
-    R_ds      = R_arr[::step_r]
-
-    R_max_hm  = R_ds.max() if R_ds.max() > 0 else 1.0
-
-    # Colour ramp: dark-blue → green → orange → red
-    def _ring_color(val, vmax):
-        t = min(val / vmax, 1.0)
+    # Цветовая шкала: синий → зелёный → оранжевый → красный
+    def _ring_color(t):
+        """t в диапазоне [0, 1]"""
+        t = max(0.0, min(1.0, t))
         if t < 0.33:
-            r2, g2, b2 = int(30 + t/0.33*( 26-30)), int(58 + t/0.33*(107-58)), int(95 + t/0.33*(74-95))
+            tt = t / 0.33
+            return f"rgba({int(30+tt*(-4))},{int(58+tt*49)},{int(95+tt*(-21))},0.9)"
         elif t < 0.66:
-            tt = (t-0.33)/0.33
-            r2, g2, b2 = int(26 + tt*(180-26)), int(107 + tt*(83-107)), int(74 + tt*(9-74))
+            tt = (t - 0.33) / 0.33
+            return f"rgba({int(26+tt*154)},{int(107+tt*(-24))},{int(74+tt*(-65))},0.9)"
         else:
-            tt = (t-0.66)/0.34
-            r2, g2, b2 = int(180 + tt*(239-180)), int(83 + tt*(68-83)), int(9 + tt*(68-9))
-        return f"rgba({r2},{g2},{b2},0.85)"
+            tt = (t - 0.66) / 0.34
+            return f"rgba({int(180+tt*59)},{int(83+tt*(-15))},{int(9+tt*59)},0.9)"
 
-    theta_ring = list(np.linspace(0, 360, 72, endpoint=False)) + [0]  # close the ring
+    # Прореживаем до 40 колец
+    MAX_RINGS = 40
+    step_r = max(1, len(r_arr) // MAX_RINGS)
+    r_ds   = r_arr[::step_r]
+    R_ds   = R_arr[::step_r]
+    R_max_hm = float(R_ds.max()) if R_ds.max() > 0 else 1.0
+
+    # Ширина каждого кольца в радиальных единицах
+    widths = np.diff(r_ds, prepend=0.0)
+
+    # 36 секторов по 10° — полный круг
+    N_SEC   = 36
+    d_theta = 360.0 / N_SEC
+    thetas  = np.arange(0, 360, d_theta)
 
     fig_hm = go.Figure()
 
-    # Draw rings from outside in so inner rings paint over outer ones
-    for i in range(len(r_ds)-1, -1, -1):
-        color = _ring_color(R_ds[i], R_max_hm)
-        fig_hm.add_trace(go.Scatterpolar(
-            r=[r_ds[i]] * len(theta_ring),
-            theta=theta_ring,
-            mode="lines",
-            fill="toself" if i == 0 else "tonextr",
-            fillcolor=color,
-            line=dict(color=color, width=0),
-            hovertemplate=f"r = {r_ds[i]:.1f} m<br>R = {R_ds[i]:.3e}<extra></extra>",
+    for i, (r_val, R_val, w) in enumerate(zip(r_ds, R_ds, widths)):
+        t_norm = R_val / R_max_hm
+        color  = _ring_color(t_norm)
+        fig_hm.add_trace(go.Barpolar(
+            r=[r_val] * N_SEC,
+            theta=thetas,
+            width=[d_theta] * N_SEC,
+            base=[r_val - w] * N_SEC,
+            marker=dict(color=color, line=dict(width=0)),
+            hovertemplate=(
+                f"r = {r_val:.1f} m<br>"
+                f"R = {R_val:.3e} {L['kpi_R_unit']}<extra></extra>"
+            ),
             showlegend=False,
         ))
 
-    # Wellbore marker at centre
+    # Маркер скважины в центре
     fig_hm.add_trace(go.Scatterpolar(
-        r=[0], theta=[0], mode="markers+text",
-        marker=dict(size=12, color="white", symbol="circle"),
-        text=["⛳"], textposition="middle center",
-        hoverinfo="skip", showlegend=False,
-    ))
-
-    # Invisible colour axis for the colour bar using a tiny scatter
-    fig_hm.add_trace(go.Scatter(
-        x=[None], y=[None], mode="markers",
-        marker=dict(
-            colorscale=[
-                [0.0,  "#1e3a5f"],
-                [0.33, "#1a6b4a"],
-                [0.66, "#b45309"],
-                [1.0,  "#ef4444"],
-            ],
-            cmin=0, cmax=R_max_hm,
-            colorbar=dict(
-                title=dict(text=L["R_axis"], font=dict(color="#9ca3af", size=11)),
-                tickfont=dict(color="#9ca3af", family="JetBrains Mono", size=10),
-                bgcolor="rgba(0,0,0,0)",
-                thickness=14,
-                len=0.75,
-            ),
-            showscale=True,
-            color=[0],
-        ),
+        r=[0.0], theta=[0],
+        mode="markers",
+        marker=dict(size=10, color="white", symbol="circle"),
+        hovertemplate="Скважина<extra></extra>" if st.session_state.lang == "ru" else "Wellbore<extra></extra>",
         showlegend=False,
-        hoverinfo="skip",
     ))
 
     fig_hm.update_layout(
@@ -880,15 +864,20 @@ elif step == 3:
                 visible=True, showgrid=True, gridcolor="#1e2230",
                 tickfont=dict(color="#6b7280", size=10, family="JetBrains Mono"),
                 ticksuffix=" m",
+                range=[0, float(r_ds[-1]) * 1.05],
             ),
-            angularaxis=dict(showgrid=False, showticklabels=False),
+            angularaxis=dict(
+                showgrid=False, showticklabels=False, direction="clockwise",
+            ),
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(family="DM Sans, sans-serif", color="#9ca3af"),
         height=480,
-        margin=dict(l=40, r=80, t=40, b=40),
-        hoverlabel=dict(bgcolor="#1e2230", bordercolor="#2d3748",
-                        font=dict(family="JetBrains Mono", color="#e8eaf0")),
+        margin=dict(l=40, r=40, t=40, b=40),
+        hoverlabel=dict(
+            bgcolor="#1e2230", bordercolor="#2d3748",
+            font=dict(family="JetBrains Mono", color="#e8eaf0"),
+        ),
     )
     st.plotly_chart(fig_hm, use_container_width=True)
 
@@ -992,7 +981,4 @@ elif step == 3:
             st.metric("R_max",  f"{R_max:.4e}")
             st.metric("M(t)",   f"{M_t:.4e} т")
             st.metric("n_r",    "300")
-            st.metric("M(t)",   f"{M_t:.4e} т")
-            st.metric("n_r",    "300")
-
 
